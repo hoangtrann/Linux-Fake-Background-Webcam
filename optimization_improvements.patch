@@ -1,0 +1,33 @@
+--- a/lfbw/lfbw.py
++++ b/lfbw/lfbw.py
+@@ -143,6 +143,9 @@ class FakeCam:
+         self.v4l2loopback_path = args.v4l2loopback_path
+         self.profile = args.profile
+
++        # Pre-allocate arrays for performance
++        self._dilate_kernel = np.ones((3, 3), np.uint8)
++        self._black_background = None
++
+         # Process unified filter arguments with structured defaults
+         self.filters = {
+             'selfie': create_filter_config(process_filter_args(args.selfie), 'selfie'),
+@@ -333,7 +336,7 @@ class FakeCam:
+
+         if self.postprocess:
+             # Use smaller kernel for dilate (3x3 instead of 5x5) for better performance
+-            cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1, dst=mask)
++            cv2.dilate(mask, self._dilate_kernel, iterations=1, dst=mask)
+             # Use GaussianBlur with smaller kernel (7x7 instead of 10x10) for better performance
+             cv2.GaussianBlur(mask, (7, 7), 0, dst=mask)
+
+@@ -356,8 +359,8 @@ class FakeCam:
+             # When background is disabled, use solid black for best performance
+             if bg_config['disabled']:
+                 # Create solid black background (much faster than blur)
+-                if not hasattr(self, '_black_background'):
+-                    self._black_background = np.zeros((self.height, self.width, 3), dtype=np.uint8)
++                if self._black_background is None:
++                    self._black_background = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                 background_frame = self._black_background
+             else:
+                 # Default blur background - use smaller kernel for better performance (15 instead of 21)
