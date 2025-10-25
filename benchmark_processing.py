@@ -57,7 +57,7 @@ def benchmark_segmentation(width, height, num_frames=100, warmup=10):
 
     # Create segmenter
     print("Initializing ImageSegmenter...")
-    segmenter = ImageSegmenter(width, height, use_gpu=False)
+    segmenter = ImageSegmenter(width, height)
 
     # Create synthetic frame
     print(f"Creating synthetic {width}x{height} frame...")
@@ -162,7 +162,7 @@ def benchmark_full_pipeline(width, height, num_frames=100, warmup=10):
     import cv2
 
     # Initialize segmenter
-    segmenter = ImageSegmenter(width, height, use_gpu=False)
+    segmenter = ImageSegmenter(width, height)
 
     # Process filter configs
     filters = {
