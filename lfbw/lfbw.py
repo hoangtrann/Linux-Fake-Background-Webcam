@@ -47,10 +47,12 @@ class ImageSegmenter:
         mask = (category_mask == 0).astype(np.float32)
 
         # Upscale mask back to original resolution
+        # Use INTER_LINEAR for smooth upscaling
         mask_upscaled = cv2.resize(mask, (self.orig_w, self.orig_h), interpolation=cv2.INTER_LINEAR)
 
         # Smooth edges to reduce cutting/inconsistency
-        mask_upscaled = cv2.GaussianBlur(mask_upscaled, (7, 7), 0)
+        # Use a smaller kernel for faster blur while maintaining quality
+        mask_upscaled = cv2.GaussianBlur(mask_upscaled, (5, 5), 0)
 
         return mask_upscaled
 
@@ -139,6 +141,7 @@ class FakeCam:
         self.postprocess = args.no_postprocess
         self.ondemand = not args.no_ondemand
         self.v4l2loopback_path = args.v4l2loopback_path
+        self.profile = args.profile
 
         # Process unified filter arguments with structured defaults
         self.filters = {
@@ -316,14 +319,26 @@ class FakeCam:
                                                            (self.width, self.height))
 
     def compose_frame(self, frame):
-        mask = copy.copy(self.classifier.segment(frame))
+        if self.profile:
+            t_start = time.perf_counter()
+
+        # segment() already returns a new array, no need to copy
+        mask = self.classifier.segment(frame)
+
+        if self.profile:
+            t_segment = time.perf_counter()
 
         if self.threshold < 1:
             cv2.threshold(mask, self.threshold, 1, cv2.THRESH_BINARY, dst=mask)
 
         if self.postprocess:
-            cv2.dilate(mask, np.ones((5, 5), np.uint8), iterations=1, dst=mask)
-            cv2.blur(mask, (10, 10), dst=mask)
+            # Use smaller kernel for dilate (3x3 instead of 5x5) for better performance
+            cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1, dst=mask)
+            # Use GaussianBlur with smaller kernel (7x7 instead of 10x10) for better performance
+            cv2.GaussianBlur(mask, (7, 7), 0, dst=mask)
+
+        if self.profile:
+            t_postprocess = time.perf_counter()
 
         # Handle mask update speed
         bg_config = self.filters['background']
@@ -337,8 +352,8 @@ class FakeCam:
         # Get background frame
         background_frame = None
         if self.images["background"] is None:
-            # Default blur background
-            blur_val = bg_config['blur'] if bg_config['blur'] is not None else 21
+            # Default blur background - use smaller kernel for better performance (15 instead of 21)
+            blur_val = bg_config['blur'] if bg_config['blur'] is not None else 15
             blur_val = getNextOddNumber(blur_val)
             sigma = blur_val / 3
             background_frame = cv2.GaussianBlur(frame,
@@ -348,11 +363,17 @@ class FakeCam:
         else:
             background_frame = next(self.images["background"])
 
+        if self.profile:
+            t_background = time.perf_counter()
+
         # Apply background effects
         background_frame = apply_effects_from_config(background_frame, bg_config)
 
         # Apply selfie effects
         frame = apply_effects_from_config(frame, self.filters['selfie'])
+
+        if self.profile:
+            t_effects = time.perf_counter()
 
         # Replace background
         if self.use_sigmoid:
@@ -387,6 +408,20 @@ class FakeCam:
                 cv2.blendLinear(frame, foreground,
                         self.images["inverted_foreground_mask"],
                         self.images["foreground_mask"], dst=frame)
+
+        if self.profile:
+            t_end = time.perf_counter()
+            # Store profiling data
+            if not hasattr(self, 'profile_times'):
+                self.profile_times = []
+            self.profile_times.append({
+                'segment': (t_segment - t_start) * 1000,
+                'postprocess': (t_postprocess - t_segment) * 1000,
+                'background': (t_background - t_postprocess) * 1000,
+                'effects': (t_effects - t_background) * 1000,
+                'blend': (t_end - t_effects) * 1000,
+                'total': (t_end - t_start) * 1000
+            })
 
         return frame
 
@@ -442,7 +477,31 @@ class FakeCam:
                 td = time.monotonic() - t0
                 if td > print_fps_period:
                     self.current_fps = frame_count / td
-                    print("FPS: {:6.2f}".format(self.current_fps), end="\r")
+                    fps_msg = "FPS: {:6.2f}".format(self.current_fps)
+
+                    # Add profiling info if enabled
+                    if self.profile and hasattr(self, 'profile_times') and len(self.profile_times) > 0:
+                        # Calculate average times over the period
+                        avg_times = {
+                            'segment': sum(t['segment'] for t in self.profile_times) / len(self.profile_times),
+                            'postprocess': sum(t['postprocess'] for t in self.profile_times) / len(self.profile_times),
+                            'background': sum(t['background'] for t in self.profile_times) / len(self.profile_times),
+                            'effects': sum(t['effects'] for t in self.profile_times) / len(self.profile_times),
+                            'blend': sum(t['blend'] for t in self.profile_times) / len(self.profile_times),
+                            'total': sum(t['total'] for t in self.profile_times) / len(self.profile_times)
+                        }
+                        self.profile_times = []  # Reset for next period
+
+                        print("\n" + fps_msg)
+                        print(f"  Segment:     {avg_times['segment']:6.2f}ms")
+                        print(f"  Postprocess: {avg_times['postprocess']:6.2f}ms")
+                        print(f"  Background:  {avg_times['background']:6.2f}ms")
+                        print(f"  Effects:     {avg_times['effects']:6.2f}ms")
+                        print(f"  Blend:       {avg_times['blend']:6.2f}ms")
+                        print(f"  Total:       {avg_times['total']:6.2f}ms ({1000/avg_times['total']:.1f} max fps)")
+                    else:
+                        print(fps_msg, end="\r")
+
                     frame_count = 0
                     t0 = time.monotonic()
             else:
@@ -530,6 +589,8 @@ Examples:
                         "https://github.com/fangfufu/Linux-Fake-Background-Webcam/issues/135#issuecomment-883361294")
     parser.add_argument("--dump", action="store_true",
                         help="Dump the filter configuration and exit")
+    parser.add_argument("--profile", action="store_true",
+                        help="Enable performance profiling to show time spent in each operation")
     return parser
 
 
