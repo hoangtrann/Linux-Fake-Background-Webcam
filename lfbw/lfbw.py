@@ -342,7 +342,8 @@ class FakeCam:
 
         # Handle mask update speed
         bg_config = self.filters['background']
-        if bg_config['mask_update_speed'] is not None:
+        # Skip mask smoothing when background is disabled for better performance
+        if not bg_config['disabled'] and bg_config['mask_update_speed'] is not None:
             MRAR = getPercentageFloat(bg_config['mask_update_speed'])
             if MRAR < 1:
                 if self.old_mask is None:
@@ -352,14 +353,21 @@ class FakeCam:
         # Get background frame
         background_frame = None
         if self.images["background"] is None:
-            # Default blur background - use smaller kernel for better performance (15 instead of 21)
-            blur_val = bg_config['blur'] if bg_config['blur'] is not None else 15
-            blur_val = getNextOddNumber(blur_val)
-            sigma = blur_val / 3
-            background_frame = cv2.GaussianBlur(frame,
-                                                (blur_val, blur_val),
-                                                sigma,
-                                                borderType=cv2.BORDER_DEFAULT)
+            # When background is disabled, use solid black for best performance
+            if bg_config['disabled']:
+                # Create solid black background (much faster than blur)
+                if not hasattr(self, '_black_background'):
+                    self._black_background = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                background_frame = self._black_background
+            else:
+                # Default blur background - use smaller kernel for better performance (15 instead of 21)
+                blur_val = bg_config['blur'] if bg_config['blur'] is not None else 15
+                blur_val = getNextOddNumber(blur_val)
+                sigma = blur_val / 3
+                background_frame = cv2.GaussianBlur(frame,
+                                                    (blur_val, blur_val),
+                                                    sigma,
+                                                    borderType=cv2.BORDER_DEFAULT)
         else:
             background_frame = next(self.images["background"])
 
