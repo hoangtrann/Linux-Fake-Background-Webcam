@@ -25,8 +25,18 @@ from mediapipe.tasks.python import vision
 
 class ImageSegmenter:
 
-    def __init__(self, width, height):
-        base_options = python.BaseOptions(model_asset_path='selfie_segmenter_landscape.tflite')
+    def __init__(self, width, height, use_gpu=False):
+        # Configure base options with GPU support if requested
+        if use_gpu:
+            base_options = python.BaseOptions(
+                model_asset_path='selfie_segmenter_landscape.tflite',
+                delegate=python.BaseOptions.Delegate.GPU
+            )
+        else:
+            base_options = python.BaseOptions(
+                model_asset_path='selfie_segmenter_landscape.tflite'
+            )
+
         options = vision.ImageSegmenterOptions(
             base_options=base_options,
             output_category_mask=True
@@ -34,7 +44,11 @@ class ImageSegmenter:
         self.orig_w, self.orig_h = width, height
         self.target_w = 256
         self.target_h = int(256 * self.orig_h / self.orig_w)
+        self.use_gpu = use_gpu
         self.segmenter = vision.ImageSegmenter.create_from_options(options)
+
+        if use_gpu:
+            print("GPU acceleration enabled for MediaPipe")
     
     def segment(self, frame):
 
@@ -139,6 +153,7 @@ class FakeCam:
         self.postprocess = args.no_postprocess
         self.ondemand = not args.no_ondemand
         self.v4l2loopback_path = args.v4l2loopback_path
+        self.use_gpu = args.gpu
 
         # Process unified filter arguments with structured defaults
         self.filters = {
@@ -181,7 +196,7 @@ class FakeCam:
             except Exception:
                 print("Cannot download MediaPipe model")
 
-        self.classifier = ImageSegmenter(self.real_width, self.real_height)
+        self.classifier = ImageSegmenter(self.real_width, self.real_height, self.use_gpu)
 
 
     def resize_image(self, img, keep_aspect):
@@ -530,6 +545,8 @@ Examples:
                         "https://github.com/fangfufu/Linux-Fake-Background-Webcam/issues/135#issuecomment-883361294")
     parser.add_argument("--dump", action="store_true",
                         help="Dump the filter configuration and exit")
+    parser.add_argument("--gpu", action="store_true",
+                        help="Enable GPU acceleration for MediaPipe processing")
     return parser
 
 
