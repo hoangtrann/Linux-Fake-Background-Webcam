@@ -46,11 +46,11 @@ class ImageSegmenter:
         category_mask = segmentation_result.category_mask.numpy_view()
         mask = (category_mask == 0).astype(np.float32)
 
-        # Upscale mask back to original resolution
-        mask_upscaled = cv2.resize(mask, (self.orig_w, self.orig_h), interpolation=cv2.INTER_LINEAR)
+        # Upscale mask back to original resolution (INTER_NEAREST is 2-3x faster for masks)
+        mask_upscaled = cv2.resize(mask, (self.orig_w, self.orig_h), interpolation=cv2.INTER_NEAREST)
 
-        # Smooth edges to reduce cutting/inconsistency
-        mask_upscaled = cv2.GaussianBlur(mask_upscaled, (7, 7), 0)
+        # Smooth edges to reduce cutting/inconsistency (reduced from 7x7 to 5x5 for performance)
+        mask_upscaled = cv2.GaussianBlur(mask_upscaled, (5, 5), 0)
 
         return mask_upscaled
 
@@ -322,8 +322,9 @@ class FakeCam:
             cv2.threshold(mask, self.threshold, 1, cv2.THRESH_BINARY, dst=mask)
 
         if self.postprocess:
-            cv2.dilate(mask, np.ones((5, 5), np.uint8), iterations=1, dst=mask)
-            cv2.blur(mask, (10, 10), dst=mask)
+            # Reduced kernel sizes for performance (5x5->3x3, 10x10->7x7)
+            cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1, dst=mask)
+            cv2.blur(mask, (7, 7), dst=mask)
 
         # Handle mask update speed
         bg_config = self.filters['background']
@@ -345,11 +346,14 @@ class FakeCam:
                                                 (blur_val, blur_val),
                                                 sigma,
                                                 borderType=cv2.BORDER_DEFAULT)
+            # Apply non-blur effects only (avoid double blur)
+            temp_config = bg_config.copy()
+            temp_config['blur'] = None
+            background_frame = apply_effects_from_config(background_frame, temp_config)
         else:
             background_frame = next(self.images["background"])
-
-        # Apply background effects
-        background_frame = apply_effects_from_config(background_frame, bg_config)
+            # Apply all effects including blur for background images/videos
+            background_frame = apply_effects_from_config(background_frame, bg_config)
 
         # Apply selfie effects
         frame = apply_effects_from_config(frame, self.filters['selfie'])
@@ -573,10 +577,12 @@ def blur_effect(frame, value=90):
     value = min(100, max(0, int(value)))
     if value == 0:
         return frame
-    # Convert blur percentage to kernel size
-    kernel_size = int((value / 100) * 99) + 1
+    # Convert blur percentage to kernel size (reduced max from 99 to 49 for performance)
+    kernel_size = int((value / 100) * 49) + 1
     kernel_size = getNextOddNumber(kernel_size)
-    return cv2.GaussianBlur(frame, (kernel_size, kernel_size), 0)
+    # Calculate sigma for better quality at smaller kernel
+    sigma = kernel_size / 3.0
+    return cv2.GaussianBlur(frame, (kernel_size, kernel_size), sigma)
 
 def solid_effect(frame, color):
     frame[:] = color
